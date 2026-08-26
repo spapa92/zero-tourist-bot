@@ -1,161 +1,176 @@
 # CLAUDE.md
 
-Guidance for AI assistants working in this repository.
+Guida per gli assistenti AI che lavorano su questo repository.
 
-## Project
+## Progetto
 
-**zero-tourist-bot** (brand: **FluxAssist**) — a WhatsApp bot that pre-qualifies real-estate
-leads so agents stop losing hours on "property tourists" (contacts with no real budget,
-no mortgage pre-approval, or outside the served area).
+**zero-tourist-bot** (brand: **FluxAssist**) — un bot WhatsApp che prequalifica i lead
+immobiliari, così che gli agenti smettano di perdere ore con i "turisti dell'immobile"
+(contatti senza budget reale, senza mutuo pre-approvato o fuori zona).
 
-Single-tenant microservice: **one deploy per agency**, driven by one YAML config file.
-Target load is < 100 conversations/day, so everything is deliberately small and boring.
+Microservizio single-tenant: **un deploy per agenzia**, guidato da un unico file YAML di
+configurazione. Il carico di riferimento è < 100 conversazioni/giorno, quindi tutto è
+volutamente piccolo e senza fronzoli.
 
-Flow: WhatsApp inbound → LangGraph slot-filling (`intento, zona, tipologia, budget, mutuo`)
-→ config-driven routing → **in target**: book a Google Calendar slot / **out of target**:
-polite dismissal + link to the agency website. Every turn is logged to Postgres.
+Flusso: inbound WhatsApp → slot-filling LangGraph (`intento, zona, tipologia, budget, mutuo`)
+→ routing config-driven → **in target**: crea lo slot su Google Calendar / **fuori target**:
+congedo educato + link al sito dell'agenzia. Ogni turno viene loggato su Postgres.
 
-Business rationale and closed architectural decisions live in `docs/assessment.md`.
-Read it before proposing architectural changes — most alternatives were already evaluated
-and rejected there (Java/Node runtimes, unofficial WhatsApp APIs, Cal.com, managed cloud).
+La motivazione di business e le decisioni architetturali già chiuse stanno in
+`docs/assessment.md`. Leggilo prima di proporre cambi di architettura: quasi tutte le
+alternative sono già state valutate e scartate lì (runtime Java/Node, API WhatsApp non
+ufficiali, Cal.com, cloud gestito).
 
-## Commands
+## Comandi
 
 ```bash
-# Setup (no venv is committed; create one if you want isolation)
+# Setup (nessun venv è versionato; creane uno se vuoi isolamento)
 pip install -r requirements.txt
-pip install pytest ruff langgraph-checkpoint-sqlite   # dev-only, see note below
+pip install pytest ruff langgraph-checkpoint-sqlite   # solo dev, vedi nota sotto
 
-pytest                        # full suite — 40 tests, ~1s, no network required
-pytest tests/test_graph.py -q # single file
-ruff check .                  # lint gate — must stay clean
+pytest                        # suite completa — 40 test, ~1s, non serve rete
+pytest tests/test_graph.py -q # singolo file
 
-alembic upgrade head          # apply migrations (URL comes from DATABASE_URL, not alembic.ini)
-uvicorn app.main:app --reload # local server on :8000
+ruff check .                  # gate di lint — deve restare pulito
 
-docker compose up -d          # app + Postgres + Caddy (needs a real domain in Caddyfile)
+alembic upgrade head          # applica le migrazioni (URL da DATABASE_URL, non da alembic.ini)
+uvicorn app.main:app --reload # server locale su :8000
+
+docker compose up -d          # app + Postgres + Caddy (serve un dominio reale nel Caddyfile)
 ```
 
-**Dev-dependency gap:** `tests/test_checkpointer.py` imports `langgraph.checkpoint.sqlite`, but
-`langgraph-checkpoint-sqlite` is declared in neither `requirements.txt` nor the `dev` extra in
-`pyproject.toml`. Install it manually or that test fails with `ModuleNotFoundError`.
+**Dipendenza di sviluppo mancante:** `tests/test_checkpointer.py` importa
+`langgraph.checkpoint.sqlite`, ma `langgraph-checkpoint-sqlite` non è dichiarato né in
+`requirements.txt` né nell'extra `dev` di `pyproject.toml`. Installalo a mano, altrimenti quel
+test fallisce con `ModuleNotFoundError`.
 
-**Do not run `ruff format .` repo-wide.** Four committed files (`alembic/versions/0001_initial.py`,
-`app/graph/builder.py`, `app/whatsapp/client.py`, `tests/test_e2e.py`) drift from ruff-format
-output. `ruff check` is the enforced gate; a blanket format would bury real changes in noise.
-Format only the lines you actually touch.
+**Non lanciare `ruff format .` sull'intero repo.** Quattro file già versionati
+(`alembic/versions/0001_initial.py`, `app/graph/builder.py`, `app/whatsapp/client.py`,
+`tests/test_e2e.py`) divergono dall'output di ruff-format. Il gate applicato è `ruff check`;
+una formattazione a tappeto seppellirebbe le modifiche vere sotto il rumore. Formatta solo le
+righe che tocchi davvero.
 
-## Architecture
+## Architettura
 
 ```
 POST /webhook  (app/whatsapp/webhook.py)
-  ├─ verify_signature()          HMAC-SHA256 over the raw body, X-Hub-Signature-256 → 403 on fail
+  ├─ verify_signature()          HMAC-SHA256 sul body grezzo, X-Hub-Signature-256 → 403 se fallisce
   ├─ repository.get_or_create_lead() + add_message("user", …)
   ├─ container.graph.invoke({phone, user_message}, thread_id=phone)
-  │     app/graph/builder.py — 4 nodes, all terminal (one node per turn, then END):
+  │     app/graph/builder.py — 4 nodi, tutti terminali (un nodo per turno, poi END):
   │       classify → detect_exit()  ──────────────► exit      (STOP / UMANO / AIUTO)
-  │                → llm.extract_slots() + merge ─► ask       (asks first missing field)
-  │                                              └► route     (all 5 slots filled)
-  ├─ whatsapp.send_reply()        free-form inside the 24h window, else the re-opener template
-  └─ repository.add_message("bot", …) + save_outcome() when a decision was reached
+  │                → llm.extract_slots() + merge ─► ask       (chiede il primo campo mancante)
+  │                                              └► route     (tutti e 5 gli slot pieni)
+  ├─ whatsapp.send_reply()        formato libero dentro la finestra 24h, altrimenti template re-opener
+  └─ repository.add_message("bot", …) + save_outcome() quando si è arrivati a una decisione
 ```
 
-| Path | Responsibility |
+| Percorso | Responsabilità |
 |---|---|
-| `app/main.py` | FastAPI factory; stashes `settings` + `container` on `app.state` |
-| `app/deps.py` | Wires the container — the only place that picks concrete implementations |
-| `app/container.py` | Plain dataclass holding the wired singletons |
-| `app/config/settings.py` | Env/`.env` settings (pydantic-settings, `@lru_cache`) |
-| `app/config/agency_config.py` | Per-agency YAML rules → `AgencyConfig` |
-| `app/domain/slots.py` | `Slots` model, `FIELD_ORDER`, `merge()`, `missing_fields()` |
-| `app/graph/` | LangGraph builder, `ConversationState` TypedDict, checkpointer factory |
-| `app/routing/engine.py` | `route(slots, config) -> RoutingResult` — pure, no I/O |
-| `app/llm/` | `LLMClient` Protocol + `GeminiClient` + `RegexFallbackClient` |
-| `app/whatsapp/` | Meta Cloud API client (24h window logic) + webhook router |
-| `app/gcalendar/client.py` | `CalendarClient` Protocol + Google impl + `next_business_day_slot()` |
-| `app/db/` | SQLAlchemy models (`lead`, `message`, `outcome`), repository fns, session factory |
+| `app/main.py` | Factory FastAPI; mette `settings` e `container` su `app.state` |
+| `app/deps.py` | Costruisce il container — unico punto che sceglie le implementazioni concrete |
+| `app/container.py` | Dataclass che tiene insieme i singleton già cablati |
+| `app/config/settings.py` | Impostazioni da env/`.env` (pydantic-settings, `@lru_cache`) |
+| `app/config/agency_config.py` | Regole YAML per agenzia → `AgencyConfig` |
+| `app/domain/slots.py` | Modello `Slots`, `FIELD_ORDER`, `merge()`, `missing_fields()` |
+| `app/graph/` | Builder LangGraph, TypedDict `ConversationState`, factory del checkpointer |
+| `app/routing/engine.py` | `route(slots, config) -> RoutingResult` — puro, nessun I/O |
+| `app/llm/` | Protocol `LLMClient` + `GeminiClient` + `RegexFallbackClient` |
+| `app/whatsapp/` | Client Meta Cloud API (logica finestra 24h) + router del webhook |
+| `app/gcalendar/client.py` | Protocol `CalendarClient` + implementazione Google + `next_business_day_slot()` |
+| `app/db/` | Modelli SQLAlchemy (`lead`, `message`, `outcome`), funzioni repository, session factory |
 
-External integrations sit behind `typing.Protocol` interfaces (`LLMClient`, `CalendarClient`),
-so tests inject fakes and providers are swappable by config. Keep it that way.
+Le integrazioni esterne stanno dietro interfacce `typing.Protocol` (`LLMClient`,
+`CalendarClient`): i test iniettano dei fake e i provider restano sostituibili via
+configurazione. Mantieni questa impostazione.
 
-## Conventions
+## Convenzioni
 
-- **Italian for anything a human reads inside the project**: docstrings, code comments, commit
-  bodies, docs, and every user-facing bot string. Identifiers stay in the existing mixed style —
-  domain terms are Italian (`intento`, `zona`, `mutuo`, `slots`), plumbing is English.
-- **Conventional commits** (`feat:`, `fix:`, `docs:`, …), subject line in English.
-- **Routing rules are data, never code.** Zones, budget thresholds, allowed intents/types and
-  mortgage states belong in the agency YAML (`config/agency.example.yaml`), not in `if` branches.
-  `app/routing/engine.py` is a generic engine that applies whatever the config says.
-- **The state machine is deterministic; the LLM only extracts.** `GeminiClient` does structured
-  slot extraction (JSON schema) and nothing else. Never let the model decide in/out target,
-  phrase replies, or drive control flow — that is the anti-hallucination guarantee.
-- `from __future__ import annotations` at the top of every module; modern type hints (`str | None`).
-- Line length 100, ruff lint rules `E, F, I, W`, Python ≥ 3.11.
-- Secrets never land in git — `.gitignore` already covers `.env`, `*credentials*.json`, `*.db`.
+- **Italiano per tutto ciò che legge una persona dentro il progetto**: docstring, commenti,
+  corpo dei commit, documentazione e ogni stringa del bot rivolta all'utente. Gli identificatori
+  restano nello stile misto già presente: i termini di dominio sono in italiano (`intento`,
+  `zona`, `mutuo`, `slots`), l'infrastruttura in inglese.
+- **Conventional commits** (`feat:`, `fix:`, `docs:`, …), con l'oggetto in inglese.
+- **Le regole di routing sono dati, mai codice.** Zone, soglie di budget, intenti/tipologie
+  ammessi e stati del mutuo vivono nello YAML dell'agenzia (`config/agency.example.yaml`), non
+  in rami `if`. `app/routing/engine.py` è un motore generico che applica ciò che dice la config.
+- **La macchina a stati è deterministica; l'LLM si limita a estrarre.** `GeminiClient` fa
+  estrazione strutturata degli slot (JSON schema) e nient'altro. Non lasciare mai al modello la
+  decisione in/out target, la formulazione delle risposte o il controllo di flusso: è questa la
+  garanzia anti-allucinazione.
+- `from __future__ import annotations` in cima a ogni modulo; type hint moderni (`str | None`).
+- Lunghezza riga 100, regole ruff `E, F, I, W`, Python ≥ 3.11.
+- I segreti non finiscono mai in git: `.gitignore` copre già `.env`, `*credentials*.json`, `*.db`.
 
-## Data model
+## Modello dati
 
-`lead` (phone, `last_inbound_at` — drives the 24h window) → `message` (role `user`/`bot`, content)
-→ `outcome` (decision `in_target`/`out_target`/`exit`, extracted slots as JSON, `appointment_status`).
+`lead` (telefono, `last_inbound_at` — governa la finestra 24h) → `message` (ruolo `user`/`bot`,
+contenuto) → `outcome` (decisione `in_target`/`out_target`/`exit`, slot estratti come JSON,
+`appointment_status`).
 
-`outcome.appointment_status` is intentionally unused in Phase 1: per `docs/assessment.md`,
-the ground truth for "tourist" is the calendar **no-show**, and it is the future label for the
-Phase 2 predictive scoring. Log data now, predict later — do not add scoring to Phase 1.
+`outcome.appointment_status` è volutamente inutilizzato in Fase 1: come spiega
+`docs/assessment.md`, la ground truth del "turista" è il **no-show** a calendario, ed è
+l'etichetta futura per lo scoring predittivo di Fase 2. Ora si loggano i dati, si predice dopo:
+non aggiungere scoring alla Fase 1.
 
-Migrations are hand-written in `alembic/versions/`. `alembic/env.py` overrides the URL in
-`alembic.ini` with `Settings.database_url`, so set `DATABASE_URL` rather than editing the ini.
+Le migrazioni sono scritte a mano in `alembic/versions/`. `alembic/env.py` sovrascrive l'URL di
+`alembic.ini` con `Settings.database_url`: imposta `DATABASE_URL` invece di modificare l'ini.
 
-## Testing
+## Test
 
-- Tests are offline by design. Use `tests/helpers.py` (`FakeLLM`, `FakeCalendar`) and the
-  `agency_config` fixture from `conftest.py`; never add a test that calls Gemini, Meta or Google.
-- `FakeLLM` is a dict lookup keyed by the **exact** message text — an unlisted message returns
-  empty `Slots()`. When you add a conversation turn to a test, add its mapping too.
-- SQLAlchemy tests build their own in-memory engine (`create_engine("sqlite://")` +
-  `Base.metadata.create_all`) instead of running Alembic.
-- New behaviour needs a test in the matching `tests/test_*.py` before the task counts as done.
+- I test sono offline per scelta. Usa `tests/helpers.py` (`FakeLLM`, `FakeCalendar`) e la fixture
+  `agency_config` da `conftest.py`; non aggiungere mai test che chiamano Gemini, Meta o Google.
+- `FakeLLM` è una lookup su dizionario con chiave il testo **esatto** del messaggio: un messaggio
+  non mappato restituisce `Slots()` vuoto. Se aggiungi un turno di conversazione a un test,
+  aggiungi anche la sua mappatura.
+- I test SQLAlchemy costruiscono un engine in memoria
+  (`create_engine("sqlite://")` + `Base.metadata.create_all`) invece di lanciare Alembic.
+- Un comportamento nuovo richiede un test nel corrispondente `tests/test_*.py` prima che il task
+  possa dirsi concluso.
 
-## Gotchas
+## Insidie note
 
-- **`budget_by_zone` lookup is exact-key**, while zone matching in `_matches()` is
-  case-insensitive substring. `RegexFallbackClient` lowercases zones, so a fallback-extracted
-  `"milano"` misses the `"Milano"` key and silently falls back to `min_budget`. Normalize on both
-  sides if you touch either.
-- **The regex fallback is selection-time, not runtime.** `build_container` picks
-  `RegexFallbackClient` when `LLM_PROVIDER=fallback` or `GEMINI_API_KEY` is empty, but a Gemini
-  call that fails at runtime propagates out of the `classify` node and 500s the webhook — the
-  degradation promised in `docs/assessment.md` §5 is not implemented yet. Wrap `extract_slots`
-  before relying on it.
-- **`_handle_message` is synchronous inside an `async` endpoint**, so blocking HTTP calls run on
-  the event loop. Fine at this traffic level; revisit before raising volume.
-- **The Postgres checkpointer degrades silently.** `build_checkpointer` swallows connection errors
-  and returns `MemorySaver()`, so a misconfigured DB looks healthy while losing conversation state
-  on restart.
-- **`thread_id` is the phone number**, so LangGraph state and lead identity are the same key.
-- Meta's 24h service window: outside it only approved templates send (`reopener`,
-  `reminder_visita`). `send_reply()` already routes this — don't call `send_text` directly.
-- `next_business_day_slot()` uses naive local time while Google events are pinned to
-  `Europe/Rome`; the container's timezone matters.
+- **La lookup su `budget_by_zone` è a chiave esatta**, mentre il match della zona in `_matches()`
+  è case-insensitive su sottostringa. `RegexFallbackClient` restituisce le zone in minuscolo,
+  quindi un `"milano"` estratto dal fallback manca la chiave `"Milano"` e ricade silenziosamente
+  su `min_budget`. Se tocchi uno dei due lati, normalizza entrambi.
+- **Il fallback a regex è a tempo di selezione, non a runtime.** `build_container` sceglie
+  `RegexFallbackClient` quando `LLM_PROVIDER=fallback` o `GEMINI_API_KEY` è vuota, ma una
+  chiamata a Gemini che fallisce *durante* la conversazione risale dal nodo `classify` e manda il
+  webhook in 500: la degradazione promessa in `docs/assessment.md` §5 non è ancora implementata.
+  Incapsula `extract_slots` prima di farci affidamento.
+- **`_handle_message` è sincrona dentro un endpoint `async`**, quindi le chiamate HTTP bloccanti
+  girano sull'event loop. Accettabile a questo traffico; da rivedere prima di alzare i volumi.
+- **Il checkpointer Postgres degrada in silenzio.** `build_checkpointer` inghiotte gli errori di
+  connessione e restituisce `MemorySaver()`: un DB mal configurato sembra sano mentre perde lo
+  stato conversazionale a ogni riavvio.
+- **`thread_id` è il numero di telefono**, quindi lo stato LangGraph e l'identità del lead
+  condividono la stessa chiave.
+- Finestra di servizio 24h di Meta: fuori da essa si inviano solo template approvati (`reopener`,
+  `reminder_visita`). `send_reply()` gestisce già questo instradamento: non chiamare `send_text`
+  direttamente.
+- `next_business_day_slot()` usa orario locale naive mentre gli eventi Google sono fissati su
+  `Europe/Rome`: il fuso orario del container conta.
 
-## OpenSpec workflow
+## Workflow OpenSpec
 
-This repo uses spec-driven development (`openspec/`, plus skills in `.claude/skills/` and slash
-commands in `.claude/commands/opsx/`). The `openspec` CLI is **not installed** in this container —
-read and edit the markdown artifacts directly.
+Il repository adotta lo sviluppo spec-driven (`openspec/`, più le skill in `.claude/skills/` e i
+comandi slash in `.claude/commands/opsx/`). La CLI `openspec` **non è installata** in questo
+container: leggi e modifica direttamente i file markdown.
 
-`openspec/changes/fluxassist-mvp/` holds the active change: `proposal.md` (why/what),
-`design.md` (decisions + alternatives), `tasks.md` (checklist), and per-capability specs under
-`specs/<capability>/spec.md` using `Requirement:` / `#### Scenario:` with WHEN/THEN.
+`openspec/changes/fluxassist-mvp/` contiene il change attivo: `proposal.md` (perché/cosa),
+`design.md` (decisioni e alternative), `tasks.md` (checklist) e le spec per capability sotto
+`specs/<capability>/spec.md`, con `Requirement:` / `#### Scenario:` in forma WHEN/THEN.
 
-When you implement something covered by a task, tick it in `tasks.md`. The five open items
-(4.2, 8.1, 9.1, 9.2, 10.2) are all coded and mock-tested — they only await real credentials
-(Gemini key, Google service account, a domain, a verified WhatsApp number), as `tasks.md` notes
-at the bottom. Do not "implement" them again.
+Quando implementi qualcosa coperto da un task, spuntalo in `tasks.md`. I cinque punti aperti
+(4.2, 8.1, 9.1, 9.2, 10.2) sono già scritti e coperti da test con mock: attendono solo credenziali
+reali (chiave Gemini, service account Google, un dominio, un numero WhatsApp verificato), come
+annota `tasks.md` in fondo. Non "implementarli" di nuovo.
 
-## Configuration
+## Configurazione
 
-Copy `.env.example` → `.env`. Key variables: `AGENCY_CONFIG_PATH`, `DATABASE_URL` (SQLite locally,
-Postgres in Docker), the four `WHATSAPP_*` values, `GEMINI_API_KEY` / `LLM_PROVIDER`
-(`gemini` | `fallback`), and `GOOGLE_CALENDAR_CREDENTIALS`. Every field has a sane default in
-`Settings`, so the app boots with no `.env` — it just runs with the regex fallback and no calendar.
+Copia `.env.example` in `.env`. Variabili principali: `AGENCY_CONFIG_PATH`, `DATABASE_URL`
+(SQLite in locale, Postgres in Docker), i quattro valori `WHATSAPP_*`, `GEMINI_API_KEY` /
+`LLM_PROVIDER` (`gemini` | `fallback`) e `GOOGLE_CALENDAR_CREDENTIALS`. Ogni campo ha un default
+sensato in `Settings`, quindi l'app parte anche senza `.env`: semplicemente gira con il fallback
+a regex e senza calendario.
