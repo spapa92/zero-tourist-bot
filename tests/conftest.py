@@ -1,0 +1,18 @@
+import pytest
+
+from app.config.agency_config import AgencyConfig
+
+
+@pytest.fixture
+def agency_config() -> AgencyConfig:
+    return AgencyConfig(
+        agency_name="Agenzia Demo",
+        website_url="https://www.esempio.it",
+        served_zones=["Milano", "Roma"],
+        min_budget=150000,
+        budget_by_zone={"Milano": 200000, "Roma": 180000},
+        allowed_intents=["comprare"],
+        allowed_types=["appartamento", "casa", "villa", "commerciale"],
+        mortgage_allowed=["pre_approvato", "cash"],
+        calendar_id="primary",
+    )

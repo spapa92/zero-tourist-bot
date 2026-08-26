@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://fluxassist:fluxassist@db:5432/fluxassist
+      AGENCY_CONFIG_PATH: /app/config/agency.example.yaml
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fluxassist
+      POSTGRES_PASSWORD: fluxassist
+      POSTGRES_DB: fluxassist
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fluxassist"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

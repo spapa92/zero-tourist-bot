@@ -1,0 +1,5 @@
+# Sostituire con il dominio dell'agenzia.
+# Caddy genera e rinnova automaticamente il certificato TLS.
+your-domain.example.com {
+    reverse_proxy app:8000
+}
