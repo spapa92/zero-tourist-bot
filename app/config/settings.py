@@ -37,10 +37,14 @@ class Settings(BaseSettings):
     twilio_validate_signature: bool = True
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash"
     llm_provider: str = "gemini"  # "gemini" | "fallback"
 
     google_calendar_credentials: str = ""
+
+    # ── Dashboard lead (Basic Auth) ──
+    dashboard_username: str = ""
+    dashboard_password: str = ""
 
     @field_validator("whatsapp_provider")
     @classmethod
