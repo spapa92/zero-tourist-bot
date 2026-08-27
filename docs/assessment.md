@@ -69,6 +69,8 @@ Regola operativa: ogni contatto fuori finestra passa SEMPRE dal re-opener, poi s
 
 **Scartata l'API non ufficiale (Baileys/whatsapp-web.js)**: elimina i template ma viola i ToS e rischia il ban del numero dell'agenzia — inaccettabile per un tool di produzione.
 
+> **Aggiornamento (agosto 2026) — secondo canale: Twilio.** L'onboarding diretto su Meta (verifica Business Manager, numero, template) si è rivelato lento e bloccante. Il provider è stato messo dietro un'interfaccia `WhatsAppClient` con due implementazioni — **Meta Cloud API** e **Twilio** — attivabili una alla volta con `WHATSAPP_PROVIDER`. Meta resta il default (nessun intermediario, nessun markup); Twilio è la via rapida per partire o per non restare bloccati da una verifica. La strategia inbound-first e i due template non cambiano: cambia solo come vengono indirizzati (nome del template su Meta, `ContentSid` su Twilio). Dettagli operativi in [`docs/whatsapp-providers.md`](whatsapp-providers.md).
+
 ## 7. Decisione calendario
 
 **Scelta: Google Calendar API.** Gratuito, API matura e stabile, l'agenzia ha quasi certamente già un account Google. Cal.com scartato (dipendenza esterna non necessaria ora).
@@ -152,7 +154,7 @@ A <100 conversazioni/giorno il cloud gestito non ha argomenti a favore. Il costo
 |---|---|
 | Runtime | Python + FastAPI + LangGraph (singolo runtime) |
 | LLM | Gemini Flash, dietro `LLMClient` swappabile + fallback deterministico |
-| Messaging | Meta WhatsApp Cloud API, inbound-first + re-opener + 2 template |
+| Messaging | Meta WhatsApp Cloud API **o** Twilio (uno attivo alla volta), inbound-first + re-opener + 2 template |
 | Flusso | slot-filling flessibile con ordine di fallback |
 | Routing | config-driven, regole come dati (file per agenzia) |
 | Tenant | single-tenant |

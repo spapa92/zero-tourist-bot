@@ -11,7 +11,7 @@ from app.graph.builder import build_graph
 from app.graph.checkpointer import build_checkpointer
 from app.llm.fallback import RegexFallbackClient
 from app.llm.gemini import GeminiClient
-from app.whatsapp.client import WhatsAppClient
+from app.whatsapp.factory import build_whatsapp_client
 
 
 def build_container(settings: Settings) -> Container:
@@ -28,11 +28,7 @@ def build_container(settings: Settings) -> Container:
         else None
     )
 
-    whatsapp = WhatsAppClient(
-        settings.whatsapp_token,
-        settings.whatsapp_phone_number_id,
-        settings.whatsapp_api_version,
-    )
+    whatsapp = build_whatsapp_client(settings)
 
     checkpointer = build_checkpointer(
         settings.database_url if settings.database_url.startswith("postgres") else None

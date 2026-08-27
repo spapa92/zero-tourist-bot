@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from app.config.settings import get_settings
 from app.deps import build_container
-from app.whatsapp.webhook import router as webhook_router
+from app.whatsapp.webhooks import build_webhook_router
 
 
 def create_app() -> FastAPI:
@@ -16,11 +16,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title="FluxAssist")
     app.state.settings = settings
     app.state.container = container
-    app.include_router(webhook_router)
+    # Viene esposto solo il webhook del canale attivo (Meta oppure Twilio).
+    app.include_router(build_webhook_router(settings.whatsapp_provider))
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "whatsapp_provider": container.whatsapp.provider,
+            "whatsapp_configured": container.whatsapp.is_configured(),
+        }
 
     return app
 

@@ -1,16 +1,14 @@
-"""Webhook Meta WhatsApp: verifica firma, challenge e gestione messaggi."""
+"""Webhook Meta WhatsApp Cloud API: challenge di verifica, firma e messaggi in entrata."""
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import hmac
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from app.db import repository
-from app.domain.slots import Slots
+from app.whatsapp.handler import handle_inbound_message
 
 router = APIRouter()
 
@@ -49,33 +47,8 @@ async def webhook_receive(request: Request) -> JSONResponse:
             for message in value.get("messages", []):
                 if message.get("type") != "text":
                     continue
-                _handle_message(
-                    request,
-                    message.get("from", ""),
-                    message.get("text", {}).get("body", ""),
-                )
+                phone = message.get("from", "")
+                text = message.get("text", {}).get("body", "")
+                if phone and text:
+                    handle_inbound_message(request.app.state.container, phone, text)
     return JSONResponse({"status": "ok"})
-
-
-def _handle_message(request: Request, phone: str, text: str) -> None:
-    container = request.app.state.container
-    with container.session_factory() as session:
-        lead = repository.get_or_create_lead(session, phone)
-        lead.last_inbound_at = dt.datetime.now(dt.timezone.utc)
-        repository.add_message(session, lead, "user", text)
-
-        result = container.graph.invoke(
-            {"phone": phone, "user_message": text},
-            config={"configurable": {"thread_id": phone}},
-        )
-
-        reply = result.get("reply", "")
-        container.whatsapp.send_reply(phone, reply, lead.last_inbound_at)
-        repository.add_message(session, lead, "bot", reply)
-
-        decision = result.get("decision")
-        if decision:
-            repository.save_outcome(
-                session, lead, decision, Slots.model_validate(result.get("slots", {}))
-            )
-        session.commit()
