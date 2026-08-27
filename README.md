@@ -28,7 +28,7 @@ L'agente virtuale gestisce la conversazione su WhatsApp attraverso una macchina 
 * **Backend:** Python + FastAPI (Webhook handler & API)
 * **AI Orchestration:** LangGraph (Stateful graph routing anti-allucinazione)
 * **LLM:** Gemini Flash dietro un `LLMClient` swappabile (fallback deterministico a regole)
-* **Messaging Provider:** Meta WhatsApp Business Cloud API (o 360dialog)
+* **Messaging Provider:** Meta WhatsApp Cloud API **o** Twilio, dietro un `WhatsAppClient` swappabile — un canale attivo alla volta via `WHATSAPP_PROVIDER` ([guida](docs/whatsapp-providers.md))
 * **Database:** PostgreSQL (Persistenza dello stato conversazionale e lead log)
 * **Calendario:** Google Calendar API (generazione slot)
 * **Deployment:** VPS + Docker / Docker Compose + Caddy (auto-TLS)

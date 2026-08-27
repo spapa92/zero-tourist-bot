@@ -1,59 +1,49 @@
-"""Client WhatsApp (Meta Cloud API) e gestione della finestra di servizio 24h."""
+"""Interfaccia comune dei provider WhatsApp e gestione della finestra di servizio 24h.
+
+Il gateway supporta più canali (Meta Cloud API, Twilio), attivi **uno alla volta**:
+il resto dell'applicazione dipende solo da questa interfaccia, mai dal provider concreto.
+"""
 
 from __future__ import annotations
 
+import abc
 import datetime as dt
-
-import httpx
 
 TEMPLATE_REOPENER = "reopener"
 TEMPLATE_REMINDER = "reminder_visita"
 
 
-class WhatsAppClient:
-    def __init__(self, token: str, phone_number_id: str, api_version: str = "v21.0") -> None:
-        self.token = token
-        self.phone_number_id = phone_number_id
-        self.base_url = f"https://graph.facebook.com/{api_version}"
+class WhatsAppNotConfigured(RuntimeError):
+    """Il provider attivo non ha le credenziali necessarie per inviare messaggi."""
 
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
 
+class TemplateNotConfigured(RuntimeError):
+    """Il template richiesto non è mappato sul provider attivo."""
+
+
+class WhatsAppClient(abc.ABC):
+    """Contratto comune a tutti i provider di messaggistica WhatsApp.
+
+    `variables` è la forma neutra dei parametri di un template: chiavi posizionali
+    ("1", "2", ...) come le usa WhatsApp, tradotte da ogni provider nel proprio formato
+    (componenti per Meta, `ContentVariables` per Twilio).
+    """
+
+    provider: str = ""
+
+    def is_configured(self) -> bool:
+        """True se il provider ha tutto il necessario per inviare messaggi."""
+        return True
+
+    @abc.abstractmethod
     def send_text(self, to: str, text: str) -> dict:
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": text},
-        }
-        response = httpx.post(
-            f"{self.base_url}/{self.phone_number_id}/messages",
-            headers=self._headers(),
-            json=payload,
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()
+        """Invia un messaggio in formato libero (valido solo dentro la finestra 24h)."""
 
+    @abc.abstractmethod
     def send_template(
-        self, to: str, template_name: str, components: list[dict] | None = None
+        self, to: str, template_name: str, variables: dict[str, str] | None = None
     ) -> dict:
-        payload: dict = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "template",
-            "template": {"name": template_name, "language": {"code": "it"}},
-        }
-        if components:
-            payload["template"]["components"] = components
-        response = httpx.post(
-            f"{self.base_url}/{self.phone_number_id}/messages",
-            headers=self._headers(),
-            json=payload,
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()
+        """Invia un template approvato (unica opzione fuori dalla finestra 24h)."""
 
     def send_reply(self, to: str, text: str, last_inbound_at: dt.datetime | None) -> dict:
         """Invia in formato libero se la finestra è aperta, altrimenti il template re-opener."""
@@ -62,9 +52,7 @@ class WhatsAppClient:
         return self.send_template(to, TEMPLATE_REOPENER)
 
 
-def is_window_open(
-    last_inbound_at: dt.datetime | None, now: dt.datetime | None = None
-) -> bool:
+def is_window_open(last_inbound_at: dt.datetime | None, now: dt.datetime | None = None) -> bool:
     if last_inbound_at is None:
         return False
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -72,3 +60,15 @@ def is_window_open(
     if last.tzinfo is None:
         last = last.replace(tzinfo=dt.timezone.utc)
     return (now - last) < dt.timedelta(hours=24)
+
+
+def sorted_variables(variables: dict[str, str] | None) -> list[tuple[str, str]]:
+    """Ordina i parametri di un template per indice posizionale ("1", "2", ...)."""
+    if not variables:
+        return []
+
+    def key(item: tuple[str, str]) -> tuple[int, str]:
+        name = str(item[0])
+        return (int(name), "") if name.isdigit() else (10**6, name)
+
+    return [(str(k), str(v)) for k, v in sorted(variables.items(), key=key)]

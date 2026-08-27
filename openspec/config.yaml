@@ -9,7 +9,7 @@ schema: spec-driven
 #     We use conventional commits
 #     Domain: e-commerce platform
 context: |
-  Tech stack: Python, FastAPI, LangGraph, Gemini Flash (dietro LLMClient swappabile, fallback deterministico), PostgreSQL (SQLAlchemy + Alembic), Meta WhatsApp Business Cloud API (o 360dialog), Google Calendar API, Docker Compose + Caddy.
+  Tech stack: Python, FastAPI, LangGraph, Gemini Flash (dietro LLMClient swappabile, fallback deterministico), PostgreSQL (SQLAlchemy + Alembic), WhatsApp via provider swappabile (Meta Cloud API o Twilio, uno attivo alla volta), Google Calendar API, Docker Compose + Caddy.
   Domain: chatbot WhatsApp per qualificazione lead immobiliari (agente virtuale "FluxAssist"). Macchina a stati rigida: intento, zona, tipologia, budget, stato mutuo.
   Deployment: VPS (preferito a cloud gestito, traffico < 100 conversazioni/giorno).
   Team: sviluppatore singolo, nessun vincolo di linguaggio.
